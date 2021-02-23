@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Canvas3D - Part 1</title>
+<script src="misc.js"></script>
+</head>
+<body>
+
+<p>Rendered in software using canvas 2d, by <a href="https://twitter.com/enichan">@Enichan</a><br>
+Original version at <a href="http://kitsunegames.com/post/development/2016/07/11/canvas3d-3d-rendering-in-javascript/">kitsunegames.com</a>.</p>
+
+<canvas id="canvas" moz-opaque style="border: 1px solid black"></canvas>
+
+<script>
+// add all properties on the IO object to the window object
+// so they can be used without prefixing "IO."
+usingModule(IO);
+var model = null;
+
+// main function called on load
+function run() {
+  // loads list of files asynchronously, calls function when done
+  File.loadFiles(
+    function(files) {
+      // parse our teapot obj model file
+      model = parseObj(files[0].value);
+      // start main program
+      start();
+    },
+    "teapot.obj"
+  );
+}
+
+function start() {
+  // set our canvas size
+  var canvas = document.getElementById("canvas");
+  canvas.width = 800;
+  canvas.height = 480;
+  
+  // clear our canvas to opaque black
+  var context = canvas.getContext("2d");
+  context.fillStyle = "black";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  
+  // get image data for direct pixel access
+  var imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+  
+  // some drawing positioning
+  var centerX = canvas.width / 2.0;
+  var centerY = canvas.height / 2.0;  
+  var scale = 100;
+  centerY += 150;
+  
+  // draw our model
+  for (var i = 0; i < model.faces.length; i++) {
+    var face = model.faces[i];
+    var v0 = model.verts[face[0] - 1];
+    var v1 = model.verts[face[1] - 1];
+    var v2 = model.verts[face[2] - 1];
+    
+    if (v0 && v1 && v2) {
+      if (isCcw(v0, v1, v2)) {
+        drawLine(imageData, centerX + v0.x * scale, centerY - v0.y * scale, centerX + v1.x * scale, centerY - v1.y * scale);
+        drawLine(imageData, centerX + v1.x * scale, centerY - v1.y * scale, centerX + v2.x * scale, centerY - v2.y * scale);
+        drawLine(imageData, centerX + v2.x * scale, centerY - v2.y * scale, centerX + v0.x * scale, centerY - v0.y * scale);
+      }
+    }
+    else {
+      if (!v0) { console.log("Vertice " + (face[0] - 1) + " not found!"); }
+      if (!v1) { console.log("Vertice " + (face[1] - 1) + " not found!"); }
+      if (!v2) { console.log("Vertice " + (face[2] - 1) + " not found!"); }
+    }
+  }
+  
+  // write our new pixels to the canvas
+  context.putImageData(imageData, 0, 0);
+}
+
+// returns true if vertices are in counterclockwise order
+function isCcw(v0, v1, v2) {
+  return (v1.x - v0.x) * (v2.y - v0.y) - (v1.y - v0.y) * (v2.x - v0.x) >= 0;
+}
+
+// draws a line using Bresenham's line algorithm (integer version)
+function drawLine(imageData, x0, y0, x1, y1) {
+  // convert all coordinates to integers
+  x0 |= 0;
+  y0 |= 0;
+  x1 |= 0;
+  y1 |= 0;
+
+  // get binary pixel data array
+  var data = imageData.data;
+
+  var steep = Math.abs(y1 - y0) > Math.abs(x1 - x0);
+  if (steep) {
+    var tmp;
+    tmp = x0; x0 = y0; y0 = tmp;
+    tmp = x1; x1 = y1; y1 = tmp;
+  }
+  
+  var yStep;
+  
+  if (x0 > x1) {
+    var tmp;
+    tmp = x0; x0 = x1; x1 = tmp;
+    tmp = y0; y0 = y1; y1 = tmp;
+  }
+  
+  if (y0 < y1) {
+    yStep = 1;
+  }
+  else {
+    yStep = -1;
+  }
+  
+  var deltaX = x1 - x0;
+  var deltaY = Math.abs(y1 - y0);
+  var error = 0;
+  
+  var index = 0;
+  var y = y0;
+  for (var x = x0; x <= x1; x++) {
+    // index is vertical coordinate times width, plus horizontal coordinate, 
+    // times 4 because every pixel consists of 4 bytes
+    if (steep) {
+      index = (x * imageData.width + y) * 4; // y, x
+    }
+    else {
+      index = (y * imageData.width + x) * 4; // x, y
+    }
+    
+    // set RGBA values to 255 producing opaque white pixel
+    data[index] = data[index + 1] = data[index + 2] = data[index + 3] = 255;
+    
+    error += deltaY;
+    if ((error << 1) >= deltaX) {
+      y += yStep;
+      error -= deltaX;
+    }
+  }
+}
+
+// parses an obj file from a text string
+function parseObj(text) {
+  var verts = [];
+  var faces = [];
+  
+  // split the text into lines
+  var lines = text.replace('\r', '').split('\n');
+  var count = lines.length;
+  
+  for (var i = 0; i < count; i++) {
+    var line = lines[i];
+    
+    if (line[0] == 'v') {
+      // lines that start with 'v' are vertices
+      var tokens = line.split(' ');
+      verts.push({
+        x: parseFloat(tokens[1]), 
+        y: parseFloat(tokens[2]), 
+        z: parseFloat(tokens[3])
+      });
+    }
+    else if (line[0] == 'f') {
+      // lines that start with 'f' are faces
+      var tokens = line.split(' ');
+      var face = [
+        parseInt(tokens[1], 10),
+        parseInt(tokens[2], 10),
+        parseInt(tokens[3], 10)
+      ];
+      faces.push(face);
+      
+      if (face[0] < 0) {
+        face[0] = verts.length + face[0];
+      }
+      if (face[1] < 0) {
+        face[1] = verts.length + face[1];
+      }
+      if (face[2] < 0) {
+        face[2] = verts.length + face[2];
+      }
+    }
+  }
+  
+  // return an object containing our vertices and faces
+  return {
+    verts: verts,
+    faces: faces
+  };
+}
+
+// turn on debug mode so errors throw up an alert
+// containing error information and stack trace
+debugMode(true);
+
+// run our program when the document's loaded
+document.body.onload = run;
+</script>
+
+
+<!-- CODE LICENSE -->
+<script>
+function showLicense() {
+  document.getElementById("licensePre").style.display = "none";
+  document.getElementById("licensePost").style.visibility = "visible";
+  var license = document.getElementById("license");
+  license.style.overflowY = "visible";
+  license.style.height = "auto";
+}
+</script>
+<p></p>
+<div id="license" style="padding: 5px 10px; border: 1px dashed gray; display: inline-block; overflow-y: hidden; height: 1.2em;">
+<div id="licensePre" style="color: gray; cursor: pointer; text-align: center;" onclick="showLicense()">Licensed under MIT (click to read)</div>
+<div id="licensePost" style="	visibility: hidden;"><pre>
+MIT License
+
+Copyright (c) 2016 Emma 'Eniko' Maassen
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</pre></div>
+</div>
+
+</body>
+</html>
