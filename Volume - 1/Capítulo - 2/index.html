@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Canvas3D - Part 2</title>
+<script src="misc.js"></script>
+</head>
+<body>
+
+<p>Rendered in software using canvas 2d, by <a href="https://twitter.com/enichan">@Enichan</a><br>
+Original version at <a href="http://kitsunegames.com/post/development/2016/07/28/software-3d-rendering-in-javascript-pt2/">kitsunegames.com</a>.</p>
+
+<canvas id="canvas" moz-opaque style="border: 1px solid black"></canvas>
+
+<script>
+// add all properties on the IO object to the window object
+// so they can be used without prefixing "IO."
+usingModule(IO);
+var model = null;
+
+// main function called on load
+function run() {
+  // loads list of files asynchronously, calls function when done
+  File.loadFiles(
+    function(files) {
+      // parse our teapot obj model file
+      model = parseObj(files[0].value);
+      // start main program
+      start();
+    },
+    "teapot.obj"
+  );
+}
+
+function start() {
+  // set our canvas size
+  var canvas = document.getElementById("canvas");
+  canvas.width = 800;
+  canvas.height = 480;
+  
+  // clear our canvas to opaque black
+  var context = canvas.getContext("2d");
+  clear(context, "rgb(100, 149, 237)");
+  
+  // get image data for direct pixel access
+  var imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+  
+  // create depth buffer
+  // use Uint16 because we only need a little precision and we save 2 bytes per pixel this way
+  var depthBuffer = new Uint16Array(canvas.width * canvas.height);
+  
+  // add some properties and methods to make using this easier
+  depthBuffer.width = canvas.width;
+  depthBuffer.height = canvas.height;
+  depthBuffer.clear = function() { this.fill(65535); };
+  depthBuffer.getDepth = function(x, y) { return this[y * this.width + x] / 65535.0; };
+  depthBuffer.setDepth = function(x, y, v) { this[y * this.width + x] = (v * 65535) | 0; };
+  depthBuffer.testDepth = function(x, y, v) {
+    var value = (v * 65535) | 0;
+    if (value < 0 || value > 65535) {
+      return false;
+    }
+    var index = y * this.width + x;
+    if (value < this[index]) {
+      this[index] = value;
+      return true;
+    }
+    return false;
+  };
+  
+  // clear depth buffer and attach to imageData
+  depthBuffer.clear();
+  imageData.depthBuffer = depthBuffer;
+  
+  // create our zFar and zNear clip planes
+  var zFar = -2.5;
+  var zNear = 2.5; 
+  
+  // some drawing positioning
+  var centerX = canvas.width / 2.0;
+  var centerY = canvas.height / 2.0;  
+  var scale = 100;
+  centerY += 150;
+  
+  // draw our model
+  for (var i = 0; i < model.faces.length; i++) {
+    var face = model.faces[i];
+    var v0 = model.verts[face[0] - 1];
+    var v1 = model.verts[face[1] - 1];
+    var v2 = model.verts[face[2] - 1];
+    
+    if (v0 && v1 && v2) {
+      if (isCcw(v0, v1, v2)) {
+        // create some greyscale values from the model's Z values
+        var v0value = v0.z / 4.5 + 0.5;
+        var v1value = v1.z / 4.5 + 0.5;
+        var v2value = v2.z / 4.5 + 0.5;
+        
+        fillTriangle(
+          imageData,
+          { x: centerX + v0.x * scale, y: centerY - v0.y * scale, z: (v0.z - zNear) / (zFar - zNear),
+            r: v0value, g: v0value, b: v0value },
+          { x: centerX + v1.x * scale, y: centerY - v1.y * scale, z: (v1.z - zNear) / (zFar - zNear),
+            r: v1value, g: v1value, b: v1value },
+          { x: centerX + v2.x * scale, y: centerY - v2.y * scale, z: (v2.z - zNear) / (zFar - zNear),
+            r: v2value, g: v2value, b: v2value }
+        );
+      }
+    }
+    else {
+      if (!v0) { console.log("Vertice " + (face[0] - 1) + " not found!"); }
+      if (!v1) { console.log("Vertice " + (face[1] - 1) + " not found!"); }
+      if (!v2) { console.log("Vertice " + (face[2] - 1) + " not found!"); }
+    }
+  }
+  
+  // write our new pixels to the canvas
+  context.putImageData(imageData, 0, 0);
+}
+
+function clear(context, color) {
+  context.fillStyle = color;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+// returns true if vertices are in counterclockwise order
+function isCcw(v0, v1, v2) {
+  return (v1.x - v0.x) * (v2.y - v0.y) - (v1.y - v0.y) * (v2.x - v0.x) >= 0;
+}
+
+function cross(a, b, c) {
+  return (b.x - a.x) * -(c.y - a.y) - -(b.y - a.y) * (c.x - a.x);
+}
+
+function fillTriangle(imageData, v0, v1, v2) {
+  var minX = Math.floor(Math.min(v0.x, v1.x, v2.x));
+  var maxX = Math.ceil(Math.max(v0.x, v1.x, v2.x));
+  var minY = Math.floor(Math.min(v0.y, v1.y, v2.y));
+  var maxY = Math.ceil(Math.max(v0.y, v1.y, v2.y));
+
+  var data = imageData.data;
+  var depthBuffer = imageData.depthBuffer;
+  var width = imageData.width;
+  
+  // precalculate the area of the parallelogram defined by our triangle
+  var area = cross(v0, v1, v2);
+  
+  // get all properties on our first vertex, for interpolating later
+  var props = Object.getOwnPropertyNames(v0);
+  
+  // calculate edges
+  var edge0 = { x: v2.x - v1.x, y: v2.y - v1.y };
+  var edge1 = { x: v0.x - v2.x, y: v0.y - v2.y };
+  var edge2 = { x: v1.x - v0.x, y: v1.y - v0.y };
+  
+  // calculate which edges are right edges so we can easily skip them
+  // right edges go up, or (bottom edges) are horizontal edges that go right
+  var edgeRight0 = edge0.y < 0 || (edge0.y == 0 && edge0.x > 0);
+  var edgeRight1 = edge1.y < 0 || (edge1.y == 0 && edge0.x > 0);
+  var edgeRight2 = edge2.y < 0 || (edge2.y == 0 && edge0.x > 0);
+
+  // p is our 2D pixel location point
+  var p = {};
+  
+  // fragment is the resulting pixel with all the vertex attributes interpolated
+  var fragment = {};
+  
+  for (var y = minY; y < maxY; y++) {
+    for (var x = minX; x < maxX; x++) {
+      // sample from the center of the pixel, not the top-left corner
+      p.x = x + 0.5; p.y = y + 0.5;
+      
+      // calculate vertex weights
+      // should divide these by area, but we do that later
+      // so we divide once, not three times
+      var w0 = cross(v1, v2, p);
+      var w1 = cross(v2, v0, p);
+      var w2 = cross(v0, v1, p);
+      
+      // if the point is not inside our polygon, skip fragment
+      if (w0 < 0 || w1 < 0 || w2 < 0) {
+        continue;
+      }
+      
+      // if this is a right or bottom edge, skip fragment (top-left rule):
+      if ((w0 == 0 && edgeRight0) || (w1 == 0 && edgeRight1) || (w2 == 0 && edgeRight2)) {
+        continue;
+      }
+      
+      // interpolate our vertices
+      for (var i = 0; i < props.length; i++) {
+        var prop = props[i];
+        
+        // divide by area here to normalize
+        fragment[prop] = (w0 * v0[prop] + w1 * v1[prop] + w2 * v2[prop]) / area;
+      }
+      
+      // returns true and replaces the value if fragment.z is less than the stored value
+      if (typeof fragment.z !== "number" || depthBuffer.testDepth(x, y, fragment.z)) {
+        // set pixel
+        var index = (y * width + x) * 4;
+        data[index] = typeof fragment.r === "number" ? (fragment.r * 256) | 0 : 0;
+        data[index + 1] = typeof fragment.g === "number" ? (fragment.g * 256) | 0 : 0;
+        data[index + 2] = typeof fragment.b === "number" ? (fragment.b * 256) | 0 : 0;
+        data[index + 3] = typeof fragment.a === "number" ? (fragment.a * 256) | 0 : 255;
+      }
+    }
+  }
+}
+
+// draws a line using Bresenham's line algorithm (integer version)
+function drawLine(imageData, x0, y0, x1, y1) {
+  // convert all coordinates to integers
+  x0 |= 0;
+  y0 |= 0;
+  x1 |= 0;
+  y1 |= 0;
+
+  // get binary pixel data array
+  var data = imageData.data;
+  var width = imageData.width;
+
+  var steep = Math.abs(y1 - y0) > Math.abs(x1 - x0);
+  if (steep) {
+    var tmp;
+    tmp = x0; x0 = y0; y0 = tmp;
+    tmp = x1; x1 = y1; y1 = tmp;
+  }
+  
+  var yStep;
+  
+  if (x0 > x1) {
+    var tmp;
+    tmp = x0; x0 = x1; x1 = tmp;
+    tmp = y0; y0 = y1; y1 = tmp;
+  }
+  
+  if (y0 < y1) {
+    yStep = 1;
+  }
+  else {
+    yStep = -1;
+  }
+  
+  var deltaX = x1 - x0;
+  var deltaY = Math.abs(y1 - y0);
+  var error = 0;
+  
+  var index = 0;
+  var y = y0;
+  for (var x = x0; x <= x1; x++) {
+    // index is vertical coordinate times width, plus horizontal coordinate, 
+    // times 4 because every pixel consists of 4 bytes
+    if (steep) {
+      index = (x * width + y) * 4; // y, x
+    }
+    else {
+      index = (y * width + x) * 4; // x, y
+    }
+    
+    // set RGBA values to 255 producing opaque white pixel
+    data[index] = data[index + 1] = data[index + 2] = data[index + 3] = 255;
+    
+    error += deltaY;
+    if ((error << 1) >= deltaX) {
+      y += yStep;
+      error -= deltaX;
+    }
+  }
+}
+
+// parses an obj file from a text string
+function parseObj(text) {
+  var verts = [];
+  var faces = [];
+  
+  // split the text into lines
+  var lines = text.replace('\r', '').split('\n');
+  var count = lines.length;
+  
+  for (var i = 0; i < count; i++) {
+    var line = lines[i];
+    
+    if (line[0] == 'v') {
+      // lines that start with 'v' are vertices
+      var tokens = line.split(' ');
+      verts.push({
+        x: parseFloat(tokens[1]), 
+        y: parseFloat(tokens[2]), 
+        z: parseFloat(tokens[3])
+      });
+    }
+    else if (line[0] == 'f') {
+      // lines that start with 'f' are faces
+      var tokens = line.split(' ');
+      var face = [
+        parseInt(tokens[1], 10),
+        parseInt(tokens[2], 10),
+        parseInt(tokens[3], 10)
+      ];
+      faces.push(face);
+      
+      if (face[0] < 0) {
+        face[0] = verts.length + face[0];
+      }
+      if (face[1] < 0) {
+        face[1] = verts.length + face[1];
+      }
+      if (face[2] < 0) {
+        face[2] = verts.length + face[2];
+      }
+    }
+  }
+  
+  // return an object containing our vertices and faces
+  return {
+    verts: verts,
+    faces: faces
+  };
+}
+
+// turn on debug mode so errors throw up an alert
+// containing error information and stack trace
+debugMode(true);
+
+// run our program when the document's loaded
+document.body.onload = run;
+</script>
+
+
+<!-- CODE LICENSE -->
+<script>
+function showLicense() {
+  document.getElementById("licensePre").style.display = "none";
+  document.getElementById("licensePost").style.visibility = "visible";
+  var license = document.getElementById("license");
+  license.style.overflowY = "visible";
+  license.style.height = "auto";
+}
+</script>
+<p></p>
+<div id="license" style="padding: 5px 10px; border: 1px dashed gray; display: inline-block; overflow-y: hidden; height: 1.2em;">
+<div id="licensePre" style="color: gray; cursor: pointer; text-align: center;" onclick="showLicense()">Licensed under MIT (click to read)</div>
+<div id="licensePost" style="	visibility: hidden;"><pre>
+MIT License
+
+Copyright (c) 2016 Emma 'Eniko' Maassen
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</pre></div>
+</div>
+
+</body>
+</html>
